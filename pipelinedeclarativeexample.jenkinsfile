@@ -1,0 +1,124 @@
+pipeline {
+    agent any
+ 
+    // Define environment variables to be used in the pipeline
+    environment {
+        GIT_REPO_URL = ''
+        DEPLOY_SERVER = 'deploy.example.com'
+        DEPLOY_USER = 'deployUser'
+        BUILD_NUMBER = "${env.BUILD_NUMBER}"
+        VERSION = "1.0.${BUILD_NUMBER}"
+    }
+ 
+    // Define pipeline options like timeout, retry count, etc.
+    options {
+        timeout(time: 1, unit: 'HOURS') // Set a timeout for the entire pipeline
+        retry(2) // Retry failed stages up to 2 times
+    }
+ 
+    stages {
+        stage('Checkout') {
+            steps {
+                echo 'Checking out source code...'
+                // Checkout source code from Git repository
+                git branch: 'main', url: "${GIT_REPO_URL}"
+            }
+        }
+ 
+        stage('Setup Environment') {
+            steps {
+                echo 'Setting up environment...'
+                // Example of setting up environment or dependencies
+                sh 'python3 -m venv venv'
+                sh './venv/bin/pip install -r requirements.txt'
+            }
+        }
+ 
+        stage('Build') {
+            steps {
+                echo "Building version ${VERSION}..."
+                // Example build step (e.g., compiling code, building Docker image, etc.)
+                sh 'make build'
+            }
+        }
+ 
+        stage('Test') {
+            steps {
+                echo 'Running tests...'
+                // Run unit and integration tests
+                sh './venv/bin/python -m unittest discover tests'
+            }
+        }
+ 
+        stage('Static Code Analysis') {
+            steps {
+                echo 'Running static code analysis...'
+                // Run a static code analysis tool, such as SonarQube or ESLint
+                sh 'sonar-scanner'
+            }
+        }
+ 
+        // Parallel stages to optimize execution time
+        stage('Parallel Tasks') {
+            parallel {
+                stage('Run Lint') {
+                    steps {
+                        echo 'Running code linter...'
+                        sh './venv/bin/flake8 src'
+                    }
+                }
+                stage('Security Scan') {
+                    steps {
+                        echo 'Running security scan...'
+                        // Example: Run a security scan tool, like OWASP ZAP
+                        sh 'zap-cli start'
+                        sh 'zap-cli spider http://localhost:8080'
+                        sh 'zap-cli active-scan http://localhost:8080'
+                        sh 'zap-cli report -o zap-report.html -f html'
+                    }
+                }
+            }
+        }
+ 
+        // Deploy stage with conditional steps
+        stage('Deploy') {
+            when {
+                expression { env.BRANCH_NAME == 'main' } // Deploy only on the main branch
+            }
+            steps {
+                script {
+                    echo "Deploying version ${VERSION} to production server..."
+ 
+                    // Use credentials stored in Jenkins for secure deployment
+                    withCredentials([sshUserPrivateKey(credentialsId: 'deploy-key', keyFileVariable: 'SSH_KEY')]) {
+                        sh """
+                            ssh -i ${SSH_KEY} ${DEPLOY_USER}@${DEPLOY_SERVER} 'bash -s' < deploy.sh
+                        """
+                    }
+                }
+            }
+        }
+    }
+ 
+    post {
+        // Actions that always run after pipeline execution
+        always {
+            echo 'Cleaning up...'
+            deleteDir() // Clean up workspace
+        }
+ 
+        // Actions that run only if the build is successful
+        success {
+            echo 'Build completed successfully!'
+            archiveArtifacts artifacts: '/target/*.jar', allowEmptyArchive: true
+        }
+ 
+        // Actions that run only if the build fails
+        failure {
+            echo 'Build failed! Sending notification...'
+            mail to: 'team@example.com',
+                 subject: "Build ${env.JOB_NAME} #${env.BUILD_NUMBER} Failed",
+                 body: "Check Jenkins for details: ${env.BUILD_URL}"
+       }
+    }
+}
