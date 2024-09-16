@@ -1,1 +1,1 @@
-syso("Manoj");
+syso("Man");
