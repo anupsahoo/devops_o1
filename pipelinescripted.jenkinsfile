@@ -1,0 +1,89 @@
+node {
+    // Define global environment variables
+    env.APP_NAME = 'MyWebApp'
+    env.DEPLOY_SERVER = 'staging.example.com'
+    env.PROD_SERVER = 'production.example.com'
+    env.REPO_URL = 'https://github.com/yourusername/your-repo.git'
+
+    try {
+        // Stage 1: Checkout
+        stage('Checkout') {
+            echo 'Checking out source code...'
+            git branch: 'main', url: env.REPO_URL
+        }
+
+        // Stage 2: Parallel Code Analysis and Security Scan
+        stage('Code Quality and Security Checks') {
+            parallel (
+                "Static Code Analysis": {
+                    echo 'Running static code analysis...'
+                    // Example: Run a static analysis tool (like SonarQube or ESLint)
+                    sh 'sonar-scanner -Dsonar.projectKey=MyWebApp'
+                },
+                "Security Scan": {
+                    echo 'Running security scan...'
+                    // Example: Run a security scan tool, like OWASP Dependency Check
+                    sh 'dependency-check --scan . --format HTML --out dependency-check-report.html'
+                }
+            )
+        }
+
+        // Stage 3: Build
+        stage('Build') {
+            echo 'Building the application...'
+            // Example build step (e.g., using Maven or npm)
+            sh 'mvn clean package -DskipTests=true'
+        }
+
+        // Stage 4: Test
+        stage('Test') {
+            parallel (
+                "Unit Tests": {
+                    echo 'Running unit tests...'
+                    sh 'mvn test -Dtest=*UnitTest'
+                },
+                "Integration Tests": {
+                    echo 'Running integration tests...'
+                    sh 'mvn verify -Dtest=*IntegrationTest'
+                }
+            )
+        }
+
+        // Stage 5: Deploy to Staging
+        stage('Deploy to Staging') {
+            echo 'Deploying to staging environment...'
+            // Use Jenkins credentials for secure deployment
+            withCredentials([sshUserPrivateKey(credentialsId: 'staging-deploy-key', keyFileVariable: 'SSH_KEY')]) {
+                sh """
+                    ssh -i ${SSH_KEY} user@${DEPLOY_SERVER} 'bash -s' < deploy-staging.sh
+                """
+            }
+        }
+
+        // Stage 6: Approval for Production Deployment
+        stage('Approval for Production Deployment') {
+            input message: 'Do you want to deploy to production?', ok: 'Deploy'
+        }
+
+        // Stage 7: Deploy to Production
+        stage('Deploy to Production') {
+            echo 'Deploying to production environment...'
+            withCredentials([sshUserPrivateKey(credentialsId: 'production-deploy-key', keyFileVariable: 'SSH_KEY')]) {
+                sh """
+                    ssh -i ${SSH_KEY} user@${PROD_SERVER} 'bash -s' < deploy-production.sh
+                """
+            }
+        }
+
+    } catch (Exception e) {
+        // Error handling: If any stage fails, handle the exception
+        echo "Pipeline failed: ${e.getMessage()}"
+        currentBuild.result = 'FAILURE'
+    } finally {
+        // Post-build actions
+        stage('Cleanup') {
+            echo 'Cleaning up workspace...'
+            deleteDir()
+        }
+    }
+}
