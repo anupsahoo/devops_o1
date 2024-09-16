@@ -1,0 +1,154 @@
+pipeline {
+    agent any
+
+    // Define environment variables for use throughout the pipeline
+    environment {
+        APP_NAME = 'MLWebApp'
+        GIT_REPO_URL = 'https://github.com/yourusername/your-ml-repo.git'
+        DEPLOY_STAGE_SERVER = 'staging.example.com'
+        DEPLOY_PROD_SERVER = 'production.example.com'
+        EMAIL_RECIPIENTS = 'team@example.com'
+        ML_MODEL_PATH = 'models/my_model.h5'
+        PYTHON_ENV = 'venv' // Python virtual environment
+        AI_API_KEY = credentials('ai-service-api-key') // AI Service API Key from Jenkins credentials
+    }
+
+    // Set pipeline-level options
+    options {
+        timeout(time: 2, unit: 'HOURS') // Timeout after 2 hours
+        retry(2) // Retry up to 2 times if the pipeline fails
+        buildDiscarder(logRotator(numToKeepStr: '5', artifactNumToKeepStr: '2')) // Keep only 5 builds and 2 artifacts
+        timestamps() // Show timestamps in the console output
+        ansiColor('xterm') // ANSI coloring in the output
+    }
+
+    // Set triggers to run the pipeline periodically and on changes in the repository
+    triggers {
+        cron('H 2 * * 1-5') // Run at 2 AM every weekday
+        pollSCM('H/15 * * * *') // Poll SCM every 15 minutes
+    }
+
+    // Define pipeline stages
+    stages {
+        stage('Checkout') {
+            steps {
+                echo 'Checking out source code...'
+                git branch: 'main', url: "${GIT_REPO_URL}"
+            }
+        }
+
+        stage('Setup Environment') {
+            steps {
+                echo 'Setting up environment...'
+                sh """
+                    python3 -m venv ${PYTHON_ENV}
+                    . ${PYTHON_ENV}/bin/activate
+                    pip install -r requirements.txt
+                """
+            }
+        }
+
+        stage('Static Code Analysis') {
+            steps {
+                echo 'Running static code analysis...'
+                sh 'sonar-scanner -Dsonar.projectKey=${APP_NAME}'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo 'Building the application...'
+                sh './gradlew build'
+            }
+        }
+
+        stage('Test') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        echo 'Running unit tests...'
+                        sh './gradlew test'
+                    }
+                }
+                stage('Integration Tests') {
+                    steps {
+                        echo 'Running integration tests...'
+                        sh './gradlew integrationTest'
+                    }
+                }
+                stage('AI Model Validation') {
+                    steps {
+                        echo 'Validating AI/ML models...'
+                        sh """
+                            . ${PYTHON_ENV}/bin/activate
+                            python scripts/validate_model.py --model ${ML_MODEL_PATH}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Staging') {
+            steps {
+                echo 'Deploying to staging environment...'
+                withCredentials([sshUserPrivateKey(credentialsId: 'staging-deploy-key', keyFileVariable: 'SSH_KEY')]) {
+                    sh """
+                        ssh -i ${SSH_KEY} user@${DEPLOY_STAGE_SERVER} 'bash -s' < deploy-staging.sh
+                    """
+                }
+            }
+        }
+
+        stage('Run AI/ML Services') {
+            steps {
+                echo 'Running AI/ML services...'
+                // Example: Call an external AI/ML API for model inference
+                sh """
+                    . ${PYTHON_ENV}/bin/activate
+                    python scripts/call_ai_service.py --api-key ${AI_API_KEY} --model ${ML_MODEL_PATH}
+                """
+            }
+        }
+
+        stage('Approval for Production Deployment') {
+            when {
+                branch 'main'
+            }
+            input {
+                message 'Approve deployment to production?'
+                ok 'Deploy'
+            }
+        }
+
+        stage('Deploy to Production') {
+            steps {
+                echo 'Deploying to production environment...'
+                withCredentials([sshUserPrivateKey(credentialsId: 'production-deploy-key', keyFileVariable: 'SSH_KEY')]) {
+                    sh """
+                        ssh -i ${SSH_KEY} user@${DEPLOY_PROD_SERVER} 'bash -s' < deploy-production.sh
+                    """
+                }
+            }
+        }
+    }
+
+    // Post-build actions
+    post {
+        always {
+            echo 'Cleaning up workspace...'
+            deleteDir()
+        }
+        success {
+            echo 'Pipeline completed successfully!'
+            mail to: "${EMAIL_RECIPIENTS}",
+                 subject: "Success: ${APP_NAME} Build #${env.BUILD_NUMBER}",
+                 body: "The build was successful! Check details: ${env.BUILD_URL}"
+        }
+        failure {
+            echo 'Pipeline failed!'
+            mail to: "${EMAIL_RECIPIENTS}",
+                 subject: "Failure: ${APP_NAME} Build #${env.BUILD_NUMBER}",
+                 body: "The build failed. Check details: ${env.BUILD_URL}"
+        }
+    }
+}
